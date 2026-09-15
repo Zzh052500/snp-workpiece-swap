@@ -4,8 +4,15 @@
 并让刀路生成变得**干净、自动、可复现**；同时记录一个**至今未解的运动规划 OOM 故障**。
 
 > **一句话结论**：刀路那半边已经做到了「7 条纯坐面光栅线 / 294 点 / 零跳变 / 逐点可复现」；
-> 但运动规划（`/generate_motion_plan`）目前是**无条件硬故障**——任何请求都会在 6 秒内把
+> 但运动规划（`/generate_motion_plan`）目前是**无条件硬故障**——任何请求都会在数秒内把
 > `snp_motion_planning_node` 撑到 ~2.3 GB 撞上容器内存上限被 SIGKILL，**与工件和参数都无关**。
+>
+> 2026-09-15 的补充结论：这个 ~2.1 GB **很可能是 TrajOpt + 完整碰撞环境的正常开销而非 bug**
+> （见 [§4.7](#47-结论2026-09-15)）。若成立，**换一台内存更大的机器即可解决**——
+> 这与本文档早先的判断相反，那处判断已更正。
+
+> **最后更新：2026-09-15。** 本机（5.7 GB 内存、swap 已满）无法验证该结论；
+> 待换机后按 [§9](#9-在另一台机器上跑大内存) 执行一次收敛性实验即可判定。
 
 ---
 
@@ -19,6 +26,7 @@
 - [6. 复现步骤](#6-复现步骤)
 - [7. 文件清单](#7-文件清单)
 - [8. 环境](#8-环境)
+- [9. 在另一台机器上跑（大内存）](#9-在另一台机器上跑大内存)
 
 ---
 
@@ -215,12 +223,12 @@ success = True  message = ''
 任何 `/generate_motion_plan` 请求都会让 `snp_motion_planning_node` 在约 6 秒内从 ~130 MiB
 涨到 **2.3 GB**，撞上容器 3 GiB 上限，被 OOM kill（`exit code -9`）。
 
-**截至记录时：9 次请求、9 次死亡，无一幸免。**
+**截至 2026-09-15：14 次请求、14 次死亡，无一幸免。**
 
 ```
-Received motion planning request   9 次
-Motion Planner process succeeded   9 次
-process has died (exit -9)        10 次   ← 多出的一次是启动早期的另一次崩溃
+Received motion planning request   14 次
+Motion Planner process succeeded   14 次
+process has died (exit -9)         15 次   ← 多出的一次是启动早期的另一次崩溃
 ```
 
 即每一次规划请求都**确实规划成功了**，然后在返回结果的阶段把内存吃爆被杀掉——
@@ -294,11 +302,31 @@ Received motion planning request
 - ❌ **不是坐面网格 / `FixedDirection`**：它们解决的是「刀路干净可复现」，与 OOM 无关。
   （这一点我一开始判断错了——曾以为换网格能顺带解决 OOM，实测证明不能。）
 
-### 4.5 嫌疑范围
+### 4.5 全参数消融：内存恒定在 ~2.1 GB
+
+> 2026-09-15 补测。把能拧的旋钮逐个拧到底，节点内存增量**纹丝不动**。
+
+| 变体 | 节点 RSS 增量 |
+|---|---|
+| 基线（坐面, lvs=0.05, Taskflow `threads: 8`） | **+2220 MiB** |
+| 刀路缩到 1 条 / 39 点 | +2161 MiB |
+| `contact_check_lvs_distance` = 0.25 | +2031 MiB |
+| `contact_check_lvs_distance` = 0.50 | +1969 MiB |
+| Taskflow 执行器 `threads: 8 → 1` | +2176 MiB |
+| **工件换回原厂凳子**（`results_mesh.ply.bak-stool`） | +2168 MiB |
+| `collision_object_type: convex_mesh → mesh`（跳过凸分解） | +2028 MiB |
+
+三条独立结论：
+
+1. **不是工件。** 换回未经任何改动的原厂凳子（6463 顶点 / 12032 面）照样炸，
+   增量 +2168 vs 坐面 +2176，几乎一模一样。
+   **这推翻了「是我们的网格触发的」这个假设**——此前一直认为坐面网格是嫌疑。
+2. **不是碰撞检查精度。** `contact_check_lvs_distance` 粗 10 倍，内存只降 11%。
+3. **不是并行度。** Taskflow 执行器线程 8→1 无变化。
 
 流水线定义在
 `/opt/snp/install/snp_motion_planning/share/snp_motion_planning/config/task_composer_plugins.yaml`
-（**在镜像里，不在我们挂载的 `config/` 下**）：
+（**在镜像里，不在挂载的 `config/` 下**）：
 
 ```
 SNPPipeline:
@@ -307,25 +335,102 @@ SNPPipeline:
 ```
 
 `RasterMotionTask` 内部对每段再跑 `SNPCartesianPipeline` / `SNPFreespacePipeline`，
-而这两个子流水线里**每个 planner 任务后面都紧跟一个 `DiscreteContactCheckTask`**：
+这两个子流水线里每个 planner 任务后面都紧跟一个 `DiscreteContactCheckTask`。
+
+⚠️ **注意一处推理陷阱**：`contact_check_lvs_distance` 只管**连续**碰撞检查的采样步长，
+而 `DiscreteContactCheckTask` 做的是**离散**检查，**根本不读这个参数**。
+所以「调 lvs 无效」**不能**用来排除接触检查任务——它至今仍是嫌疑之一，
+只是「与输入无关」这一点更指向环境/求解器的固定开销。
+
+复现脚本（都在 `scripts/`）：
+
+| 脚本 | 作用 |
+|---|---|
+| `cfgtest.sh <sed表达式> <标签>` | 改 `planning_server.launch.xml` 的一个 arg 默认值 |
+| `abtest.sh <网格路径> <标签>` | 换 `results_mesh.ply`（碰撞环境用的网格） |
+| `yamltest.sh <sed表达式> <标签>` | 改 task composer 配置 |
+
+三者都走 `docker cp` + `docker restart`，**不改镜像、不重建容器、完全可逆**。
+
+### 4.6 关键证据三：内存形态是「一次性大分配」，不是泄漏
+
+> 2026-09-15 补测。爬升期每 0.15 秒抓一次 `/proc/<pid>/maps`（`scripts/prof.py`）。
 
 ```
-TrajOptMotionPlannerTask → [ErrorTask, DiscreteContactCheckTask]
-DiscreteContactCheckTask → [ErrorTask, ConstantTCPSpeedTimeParameterizationTask]
+RSS=  257M  maps=1518  [anon]=2539M  libvtkCommonCore=10M  ...
+RSS=  590M  maps=1518  [anon]=2827M  ...
+RSS= 1254M  maps=1522  [anon]=3544M  ...
+RSS= 2213M  maps=1526  [anon]=4597M  ...
+RSS=    0M  maps=   0   ← 被杀
 ```
 
-planner 一报成功、紧接着就狂调 `getKinematicGroup` 并失控涨内存 ⟹
-**首要嫌疑是 `DiscreteContactCheckTask`**（轨迹逐点接触检查）在对轨迹做离散碰撞检查时，
-反复取运动学组且不释放。
+**爬升期间映射数只从 1518 涨到 1526（仅 +8 个），却涨了 1956 MiB。**
 
-### 4.6 建议的下一步（未执行）
+即：**8 个约 250 MB 的大匿名块在同时长大**，不是成千上万个小分配的泄漏。
+`memory.current` 里增长的全部是 `[anon]`（匿名内存），没有文件映射在涨。
 
-1. **验证猜想**：把 `DiscreteContactCheckTask` 从流水线里摘掉，看内存是否保持平稳。
-   因为该 yaml 在镜像里，需要加一个挂载覆盖它，或找到能指到别处的 launch 参数。
-2. 若确认，退一步的做法是把 `RasterMotionTask` 的 `transition` / `freespace` 子流水线
-   换成不含接触检查的版本。
+`nproc = 8` —— 每个核一个大缓冲。但 `threads: 1` 并没有改变总量（见 4.5），
+说明开这些缓冲的不是 Taskflow 的线程池，而是**按硬件并发数自行分配的组件**：
+节点直接链接了 `libgomp.so.1`，二进制里含 `GOMP_parallel` / `omp_set_num_threads`。
 
-### 4.7 诊断手法的坑（供参考）
+### 4.7 结论（2026-09-15）
+
+> **最可能的解释：这 ~2.1 GB 是 TrajOpt + 完整碰撞环境的正常开销，不是 bug。**
+
+支持这个判断的三条：
+
+1. **与输入完全无关**（4.2、4.5）——是环境的固定开销，不随工作量增长。
+2. **容器 3 GiB 上限是后加的加固措施**（见 §5 的 compose 注释）。加之前容器无限制，
+   结果是**整台主机连同 2 GB swap 一起被拖死**。
+   也就是说：这个规划步骤本来就要吃掉 **>3 GB**，多到能拖死一台 5.7 GB 的主机。
+3. 上游 SNP Automate 2023 是 ROS-Industrial 的官方项目，**默认跑在工作站上**，
+   内存通常是本机的 5–10 倍。
+
+⚠️ **此处更正一个早先的错误判断。** 本文档此前说过「换一台大内存机器大概率也不会有改善」。
+那个判断建立在「2.1 GB 是病态值」的假设上。**现有证据反过来指向它是正常开销——
+所以那个回答是错的，换机器很可能确实有效。**
+
+主机侧的硬约束（2026-09-15 实测）：
+
+```
+内存： total 5.7Gi   available 2.6Gi
+交换： total 2.0Gi   used 2.0Gi   ← swap 已 100% 占满，实质没有余量
+```
+
+**要判定「换机器到底有没有用，只需一个实验**：在有余量的机器上把容器上限放到 16 GB，
+跑一次看爬升是否收敛。
+
+- **收敛** ⟹ 开销有界，换机器直接解决。
+- **不收敛** ⟹ 开销无界，换机器也救不了。
+
+这是目前剩下的**唯一关键未知量**。
+
+> ⚠️ **在这台机器上务必保留 3 GiB 上限**——去掉就是整机卡死，这是已经发生过的事故。
+
+### 4.8 尚未确认的疑点：刀路姿态
+
+用姿态矩阵第三列（刀具轴）衡量每条路径的朝向一致性（`scripts/orient.py`，
+标准差 0 表示整条路径刀具朝向完全稳定）：
+
+| 路径 | 刀具轴均值 | 标准差 |
+|---|---|---|
+| 0 | (+0.006, +0.000, +0.053) | 0.9986 |
+| 1 | (+0.020, +0.726, +0.341) | 0.5969 |
+| **2** | **(-0.000, +1.000, -0.001)** | **0.0000** |
+| 3 | (+0.018, +0.617, +0.337) | 0.7112 |
+| 4 | (+0.021, +0.689, +0.351) | 0.6334 |
+| 5 | (-0.024, +0.960, -0.074) | 0.2673 |
+| 6 | (+0.007, +0.000, +0.051) | 0.9987 |
+
+路径 2 完全一致，路径 0/6 几乎全乱——**同一条刀路内部差这么多，很可疑**。
+
+**但这条不能下结论**：拿未经任何改动的原厂球（`part_scan.ply`）做对照，
+同样每条路径标准差 ≈ 0.99。所以也可能只是对 `sand_tcp` 轴向约定的理解有误。
+
+切开这个变量的实验已经写好但**未执行**（`scripts/oneplan.py`：只把姿态一致的
+单条路径送去规划——能成功则姿态是元凶，照样炸则与姿态无关）。
+
+### 4.9 诊断手法的坑（供参考）
 
 容器里**没有** `gdb` / `eu-stack` / `pstack` / `perf`，抓不了栈。可用的手段只有：
 cgroup 内存采样 + `ps` 逐进程 RSS + 日志字符串定位。
@@ -429,13 +534,27 @@ docker exec $C bash -lc 'for d in /proc/[0-9]*; do [ "$(cat $d/comm 2>/dev/null)
 | `scripts/tpptest.py` | 通用刀路测试：`tpptest.py <config.yaml> <mesh.ply>`，按路径打印点数/bbox/跳变 |
 | `scripts/pathdump.py` | 把刀路导出成 JSON |
 | `scripts/prechk.py` | 运动规划预检，带内存心跳；第 3 个参数可只取前 N 条路径做缩放对照 |
+| `scripts/oneplan.py` | **只规划指定的若干条路径**：`oneplan.py <tpp> <mesh> <下标...>`，用来把「姿态」和「规划器」两个变量切开 |
+| `scripts/orient.py` | 打印每条路径的刀具轴一致性与标准差（判断姿态是否稳定） |
 | `scripts/oomrepro.sh` | OOM 复现 + 0.2s 粒度内存记录 |
+| `scripts/mon.sh` | 0.2s 粒度内存监视器（写 `mon.pid`，**按 PID 停**，避免误杀节点） |
+| `scripts/cfgtest.sh` | `cfgtest.sh '<sed表达式>' <标签>`：改 `planning_server.launch.xml` 的一个 arg 默认值后重启测量 |
+| `scripts/abtest.sh` | `abtest.sh <网格路径> <标签>`：换 `results_mesh.ply`（碰撞环境用的网格）后重启测量 |
+| `scripts/yamltest.sh` | `yamltest.sh '<sed表达式>' <标签>`：改 task composer 配置后重启测量 |
+| `scripts/lvslaunch.sh` / `lvstest.sh` | `contact_check_lvs_distance` 的启动时/运行时改值对照 |
+| `scripts/prof.py` + `profrun.sh` | 爬升期 0.15s 抓 `/proc/<pid>/maps`，判断是大块分配还是泄漏 |
+| `docker/compose.sim.yml` | **加固后的 compose**（shm 512M、`mem_limit: 3g`、swap 禁用、日志轮转）。§5 的全部改动都在这里 |
 | `config/tpp.yaml` | 改好的配置（`FixedDirection`，ROISelection 已停用，含详细中文注释） |
 | `config/tpp.yaml.bak-before-roiselection-removal` | 停用 ROISelection 之前的备份 |
 | `config/tpp.yaml.bak-before-fixed-direction` | 换 FixedDirection 之前的备份 |
 | `artifacts/seat_only.ply` | 坐面板网格（2256 顶点 / 4082 面，ASCII PLY） |
 | `evidence/memwatch-7paths-294pts.log` | 7 条路径的逐进程内存曲线（0.2s 粒度） |
 | `evidence/memwatch-1path-39pts.log` | 1 条路径的同上（缩放对照） |
+| `evidence/ab_stool.log` | **原厂凳子**对照的内存曲线（+2168 MiB，证明与工件无关） |
+| `evidence/tc_threads1.log` | Taskflow `threads: 1` 的内存曲线（+2176 MiB） |
+| `evidence/cfg_comesh.log` | `collision_object_type: mesh` 的内存曲线（+2028 MiB） |
+| `evidence/lvslaunch.log` | `contact_check_lvs_distance: 0.5` 启动时改值的曲线（+1969 MiB） |
+| `evidence/prof.log` | 0.15s 粒度的 `/proc/<pid>/maps` 剖析（8 个大匿名块） |
 | `evidence/event-order.txt` | 崩溃前的事件顺序原始摘录 |
 
 ---
@@ -454,3 +573,88 @@ docker exec $C bash -lc 'for d in /proc/[0-9]*; do [ "$(cat $d/comm 2>/dev/null)
 | mesh frame | `base_link` |
 | 主机 | HP Zhan 66 Pro A G1 R MT，5.8 GB 内存 |
 | 容器内调试器 | **无** `gdb` / `eu-stack` / `pstack` / `perf` |
+
+---
+
+## 9. 在另一台机器上跑（大内存）
+
+> 2026-09-15 待执行。目标：判定那 ~2.1 GB 是**有界**还是**无界**。
+
+### 9.1 为什么要换机
+
+本机 5.7 GB 内存、swap 已 100% 占满，**没有余量做这个判定实验**——
+把容器上限调大就会把整机拖死（§5 记录的事故）。
+
+### 9.2 装起来
+
+```bash
+# 1) 依赖：docker + docker compose plugin，X11（RViz 要用）
+xhost +local:
+
+# 2) 仿真本体（原厂状态，不含本次改动）
+git clone https://github.com/wjia051123-tech/snp-automate-2023-polishing-simulation.git
+cd snp-automate-2023-polishing-simulation
+docker pull ghcr.io/ros-industrial-consortium/snp_automate_2023:jazzy-master
+
+# 3) 本项目（工件替换 + 加固 + 诊断脚本）
+cd ~
+git clone https://github.com/Zzh052500/snp-workpiece-swap.git
+
+# 4) ★ 关键一步：把本项目的改动覆盖到仿真仓库上
+#    （原厂仓库里没有 tpp.yaml 的修改、没有容器加固、没有坐面网格）
+~/snp-workpiece-swap/scripts/install-into-sim.sh ~/snp-automate-2023-polishing-simulation
+
+# 5) 起仿真
+cd ~/snp-automate-2023-polishing-simulation
+./scripts/restart_demo.sh
+```
+
+> 脚本里引用仿真仓库路径用 `SNP_SIM_DIR`，默认 `$HOME/snp-automate-2023-polishing-simulation`。
+> 放在别处就先 `export SNP_SIM_DIR=<路径>`。
+
+### 9.3 判定实验（一条命令）
+
+```bash
+~/snp-workpiece-swap/scripts/converge.sh 16g
+```
+
+它会：`docker update` 把容器上限临时调到 16g（**可逆，不重建容器**）→ 重启 →
+0.2s 粒度录内存 → 发起 7 条路径 / 294 点的规划 → **按爬升段的三段斜率判定**。
+
+| 判定输出 | 含义 | 下一步 |
+|---|---|---|
+| 末段斜率坍缩到首段 1/4 以下 | **有界** | ✅ 换大内存机器即可解决。把上限设成峰值 ×1.5 固定下来 |
+| 斜率下降但未坍缩 | 有界但很大 | 继续调大上限；或调 `RasterMotionTask` 子流水线 |
+| 斜率基本没降 | **无界** | ❌ 换机器也没用。需摘掉 `DiscreteContactCheckTask`（§4.5 末） |
+
+> ⚠️ 脚本最后会**自动把上限还原成 3g**。在大内存机器上如果判定为「有界」，
+> 就直接改 `docker/compose.sim.yml` 里的 `mem_limit`，别用临时的 `docker update`。
+
+### 9.4 如果判定成功（有界），怎么真的把坐面打磨出来
+
+1. 把 `docker/compose.sim.yml` 的 `mem_limit` / `memswap_limit` 调到足够大
+2. `./scripts/restart_demo.sh`
+3. 走 §6.1 确认刀路仍正常
+4. RViz 里跑完整流程（需要交互，脚本代替不了）
+5. **注意**：`docker restart` 不会重置被 `docker cp` 改过的文件，但
+   `docker compose up -d`（`restart_demo.sh` 用的就是它）**会重建容器**，
+   把镜像里的原始文件恢复回来 —— 所以 `install-into-sim.sh` 之后不要再用
+   `cfgtest.sh` / `abtest.sh` 那种 `docker cp` 手法去做**需要长期保留**的改动。
+
+### 9.5 若还是不行，下一步的排查方向
+
+按嫌疑从高到低：
+
+1. **`DiscreteContactCheckTask`**（§4.5）。摘掉的办法：改
+   `/opt/snp/install/snp_motion_planning/share/snp_motion_planning/config/task_composer_plugins.yaml`，
+   把 `DiscreteContactCheckTask` 从 `SNPCartesianPipeline` / `SNPFreespacePipeline`
+   的边里旁路掉（`TrajOptMotionPlannerTask → ConstantTCPSpeedTimeParameterizationTask`）。
+   用 `scripts/cfgtest.sh` 的同款手法（`docker cp` + 重启）验证。
+2. **刀路姿态**（§4.8）。执行已备好但未运行的 `scripts/oneplan.py`：
+   ```bash
+   # 只把姿态完全一致的那条路径（下标 2）送去规划
+   oneplan.py <tpp> <mesh> 2
+   ```
+   能成功 ⟹ 姿态是元凶，回去修 `NormalsFromMeshFaces` / 网格法向一致性。
+3. **`octree_resolution` 与 `max_convex_hulls`**：只在 `collision_object_type` 为
+   `octree` / `convex_mesh` 时才起作用，本机已证 `mesh` 无效，但可以配合 1 一起试。

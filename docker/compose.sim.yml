@@ -1,0 +1,55 @@
+name: snp-automate-2023-polishing-simulation
+services:
+  snp_automate_2023_sim:
+    image: ghcr.io/ros-industrial-consortium/snp_automate_2023:jazzy-master
+    container_name: snp_automate_2023_sim
+    environment:
+      HOME: /workspace/snp_home
+      DISPLAY: ${DISPLAY:-:0}
+      QT_QPA_PLATFORM: xcb
+      QT_X11_NO_MITSHM: "1"
+      SNP_SIM_ROBOT: "true"
+      SNP_SIM_VISION: "true"
+      SNP_BYPASS_EXECUTION: "true"
+      ROS_LOG_DIR: /workspace/snp_home/.ros
+      ROS_DOMAIN_ID: "42"
+    user: "${CURRENT_UID:-1000:1000}"
+    stdin_open: true
+    tty: true
+    privileged: true
+    network_mode: host
+
+    # --- 防「整机卡死」加固 ---
+    # Docker 默认给容器的 /dev/shm 只有 64MB。RViz / DDS / Qt 都走 shm，
+    # 64MB 在加载网格和轨迹时会顶到上限，表现为 RViz 卡住或直接退出。
+    shm_size: 512m
+
+    # 容器内存上限 + 禁止容器使用 swap（memswap_limit == mem_limit 即为禁用）。
+    #
+    # 主机只有 5.8GB 内存，而容器默认 mem_limit=0（无上限）：容器里的运动规划
+    # 一旦内存爆掉，内核会拿**整个主机**去 swap，桌面连同所有窗口一起僵死，
+    # 这就是上次「电脑直接卡死」的机制（当时容器 OOMKilled=false、RestartCount=0，
+    # 说明容器自己没被杀——是主机被拖死了，不是容器崩了）。
+    #
+    # 设上限后，越界的是容器内某个进程被 OOM kill（docker start 几秒就回来），
+    # 而不是整台机器失去响应。3g 是对当前用量的实测余量：容器内 ROS 各节点
+    # 当前合计约 1.2GB，规划峰值留一倍以上空间。
+    mem_limit: 3g
+    memswap_limit: 3g
+
+    # 日志轮转。snp_motion_planning_node 会刷大量
+    # "Debug: Environment, getKinematicGroup(manipulator, ) cache hit!"，
+    # 默认 json-file 驱动没有任何上限，长时间运行会把磁盘写满。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ../runtime/snp_home:/workspace/snp_home
+      - ../config:/workspace/config:ro
+      - ../config:/opt/snp_automate_2023/install/snp_automate_2023/share/snp_automate_2023/config:ro
+      - ../launch:/opt/snp_automate_2023/install/snp_automate_2023/share/snp_automate_2023/launch:ro
+      - ../meshes:/opt/snp_automate_2023/install/snp_automate_2023/share/snp_automate_2023/meshes

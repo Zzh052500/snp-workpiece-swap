@@ -24,18 +24,23 @@ services:
     # 64MB 在加载网格和轨迹时会顶到上限，表现为 RViz 卡住或直接退出。
     shm_size: 512m
 
-    # 容器内存上限 + 禁止容器使用 swap（memswap_limit == mem_limit 即为禁用）。
+    # --- 容器内存上限：默认【不限制】，与原厂一致 ---
     #
-    # 主机只有 5.8GB 内存，而容器默认 mem_limit=0（无上限）：容器里的运动规划
-    # 一旦内存爆掉，内核会拿**整个主机**去 swap，桌面连同所有窗口一起僵死，
-    # 这就是上次「电脑直接卡死」的机制（当时容器 OOMKilled=false、RestartCount=0，
-    # 说明容器自己没被杀——是主机被拖死了，不是容器崩了）。
+    # 原厂 compose 里根本没有 mem_limit（`git show HEAD:docker/compose.sim.yml` 只有 image:）。
+    # 抛光运动规划峰值要吃到 3GB 以上，一个小上限会把它直接 SIGKILL —— 这正是
+    # 「以前能跑、后来跑不通」的原因，详见 README §4.11。
     #
-    # 设上限后，越界的是容器内某个进程被 OOM kill（docker start 几秒就回来），
-    # 而不是整台机器失去响应。3g 是对当前用量的实测余量：容器内 ROS 各节点
-    # 当前合计约 1.2GB，规划峰值留一倍以上空间。
-    mem_limit: 3g
-    memswap_limit: 3g
+    #   0 = 不限制。大内存机器（≥16GB）就用这个，让规划吃饱。
+    #       代价：容器内存失控时内核会拿整个主机去 swap，桌面会僵死。
+    #
+    #   小内存机器（本机 5.7GB、swap 已满）请显式设上限，否则会重演「电脑直接卡死」：
+    #       export SNP_MEM_LIMIT=3g && docker compose -f docker/compose.sim.yml up -d
+    #       设了之后越界的是容器内单进程被 OOM kill（docker start 几秒就回来），
+    #       而不是整台机器失去响应。
+    #
+    # memswap_limit == mem_limit 即为禁止容器使用 swap。
+    mem_limit: ${SNP_MEM_LIMIT:-0}
+    memswap_limit: ${SNP_MEM_LIMIT:-0}
 
     # 日志轮转。snp_motion_planning_node 会刷大量
     # "Debug: Environment, getKinematicGroup(manipulator, ) cache hit!"，

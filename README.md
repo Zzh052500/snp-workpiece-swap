@@ -1,18 +1,27 @@
 # SNP 打磨仿真：替换工件为「坐面」
 
 在 SNP Automate 2023 打磨仿真（ROS 2 Jazzy + Tesseract）里，把默认工件换成一张**凳子坐面板**，
-并让刀路生成变得**干净、自动、可复现**；同时记录一个**至今未解的运动规划 OOM 故障**。
+并让刀路生成变得**干净、自动、可复现**；同时记录一个运动规划 OOM 故障的**定位过程与结论**。
 
-> **一句话结论**：刀路那半边已经做到了「7 条纯坐面光栅线 / 294 点 / 零跳变 / 逐点可复现」；
-> 但运动规划（`/generate_motion_plan`）目前是**无条件硬故障**——任何请求都会在数秒内把
-> `snp_motion_planning_node` 撑到 ~2.3 GB 撞上容器内存上限被 SIGKILL，**与工件和参数都无关**。
+> **一句话结论**：刀路那半边已经做到了「7 条纯坐面光栅线 / 294 点 / 零跳变 / 逐点可复现」。
 >
-> 2026-09-15 的补充结论：这个 ~2.1 GB **很可能是 TrajOpt + 完整碰撞环境的正常开销而非 bug**
-> （见 [§4.7](#47-结论2026-09-15)）。若成立，**换一台内存更大的机器即可解决**——
-> 这与本文档早先的判断相反，那处判断已更正。
+> 运动规划（`/generate_motion_plan`）要吃掉 **3 GB 以上**内存——这不是 bug，是
+> TrajOpt + 完整碰撞环境的正常开销（[§4.7](#47-结论2026-09-15)）。
+> **它在这台机器上曾经跑通过一次**（上游 `docs/DEMO_RESULT.md`，2026-08-19），
+> 用的是**原厂没有任何内存上限的 compose**。
+>
+> **后来跑不通，是因为加固时加的 `mem_limit: 3g` 把它掐死了**——
+> 同一份内存需求撞上 3 GiB 天花板 → SIGKILL。这一步是我引入的回归，
+> 详见 [§4.11](#411-为什么以前能跑现在不能答案是我加的-3-gib-上限)。
+> **现已改回默认不限制**（`${SNP_MEM_LIMIT:-0}`），大内存机器上开箱即用。
+>
+> 附带结论：界面上 `remove_scan_link` / `add_scan_link` 报 unreachable，
+> **不是独立故障，是这颗节点被 OOM 打死后服务一起消失**
+> （[§4.10](#410-remove_scan_link-unreachable-是同一个-oom-的下游症状)）。
+> 别按原厂文档去反复重启，那是治标不治本。
 
-> **最后更新：2026-09-15。** 本机（5.7 GB 内存、swap 已满）无法验证该结论；
-> 待换机后按 [§9](#9-在另一台机器上跑大内存) 执行一次收敛性实验即可判定。
+> **最后更新：2026-09-15。** 本机（5.7 GB 内存、swap 已满）没有余量做最终验证；
+> 换机后按 [§9](#9-在另一台机器上跑大内存) 跑一次收敛实验，拿到峰值数字即可收尾。
 
 ---
 
@@ -21,7 +30,7 @@
 - [1. 背景](#1-背景)
 - [2. 工件替换](#2-工件替换)
 - [3. tpp.yaml 的两处修改](#3-tppyaml-的两处修改)
-- [4. 未解故障：运动规划必然 OOM](#4-未解故障运动规划必然-oom)
+- [4. 运动规划 OOM：现象、定位与结论](#4-运动规划-oom现象定位与结论)
 - [5. 容器加固](#5-容器加固)
 - [6. 复现步骤](#6-复现步骤)
 - [7. 文件清单](#7-文件清单)
@@ -214,16 +223,20 @@ success = True  message = ''
 
 ---
 
-## 4. 未解故障：运动规划必然 OOM
+## 4. 运动规划 OOM：现象、定位与结论
 
-> **状态：已定位到范围，根因未确认，未修复。** 下面全部是实测数据。
+> **状态：现象与范围已完全查清；「根因」这个词其实不适用——这是正常开销，不是 bug。**
+> 未解决的部分只是**本机没有余量做最终验证**。下面全部是实测数据。
 
 ### 4.1 现象
 
-任何 `/generate_motion_plan` 请求都会让 `snp_motion_planning_node` 在约 6 秒内从 ~130 MiB
-涨到 **2.3 GB**，撞上容器 3 GiB 上限，被 OOM kill（`exit code -9`）。
+在 **3 GiB 上限**下，任何 `/generate_motion_plan` 请求都会让 `snp_motion_planning_node`
+在约 6 秒内从 ~130 MiB 涨到 **2.3 GB**，撞顶，被 OOM kill（`exit code -9`）。
 
-**截至 2026-09-15：14 次请求、14 次死亡，无一幸免。**
+**截至 2026-09-15：14 次请求、14 次死亡，无一幸免——但全部是在 3 GiB 上限下。**
+
+⚠️ 「无一幸免」这句话**只在有上限时成立**。去掉上限它在这台机器上跑通过一次（§4.7 证据 4、
+§4.11）。读本节时请始终带着这个前提。
 
 ```
 Received motion planning request   14 次
@@ -377,14 +390,21 @@ RSS=    0M  maps=   0   ← 被杀
 
 > **最可能的解释：这 ~2.1 GB 是 TrajOpt + 完整碰撞环境的正常开销，不是 bug。**
 
-支持这个判断的三条：
+支持这个判断的四条：
 
 1. **与输入完全无关**（4.2、4.5）——是环境的固定开销，不随工作量增长。
 2. **容器 3 GiB 上限是后加的加固措施**（见 §5 的 compose 注释）。加之前容器无限制，
    结果是**整台主机连同 2 GB swap 一起被拖死**。
    也就是说：这个规划步骤本来就要吃掉 **>3 GB**，多到能拖死一台 5.7 GB 的主机。
-3. 上游 SNP Automate 2023 是 ROS-Industrial 的官方项目，**默认跑在工作站上**，
+3. 上游 SNP Automate 2023 是 ROS-Industrial 的官方项目，**默认跑在工作台/工作站上**，
    内存通常是本机的 5–10 倍。
+4. **★ 它在这台机器上真的跑通过一次。** 上游仓库的 `docs/DEMO_RESULT.md` 记录，
+   截至 **2026-08-19**「抛光运动规划完成」，且是在 `SNP_BYPASS_EXECUTION=true` 下
+   跑完了整条流水线。那一次用的就是**原厂无上限的 compose**（`git show HEAD:docker/compose.sim.yml`
+   里只有一行 `image:`，没有任何 `mem_limit`）。
+
+证据 4 的分量最重：**同一台 5.7 GB 的机器、同一份镜像，在无上限时能收敛**。
+所以这 ~2.1 GB **是有界的**——这一点基本已经确定，不必等换机再验。
 
 ⚠️ **此处更正一个早先的错误判断。** 本文档此前说过「换一台大内存机器大概率也不会有改善」。
 那个判断建立在「2.1 GB 是病态值」的假设上。**现有证据反过来指向它是正常开销——
@@ -397,15 +417,16 @@ RSS=    0M  maps=   0   ← 被杀
 交换： total 2.0Gi   used 2.0Gi   ← swap 已 100% 占满，实质没有余量
 ```
 
-**要判定「换机器到底有没有用，只需一个实验**：在有余量的机器上把容器上限放到 16 GB，
+**要判定「换机器到底有没有用」，只需一个实验**：在有余量的机器上把容器上限放到 16 GB，
 跑一次看爬升是否收敛。
 
 - **收敛** ⟹ 开销有界，换机器直接解决。
 - **不收敛** ⟹ 开销无界，换机器也救不了。
 
-这是目前剩下的**唯一关键未知量**。
+结论 4 已经把答案压到大概率的「有界」。但这条实验**仍然值得跑**——它给出的是
+具体数值（峰值到底几 GB），而换机时要靠这个数去定 `mem_limit`。
 
-> ⚠️ **在这台机器上务必保留 3 GiB 上限**——去掉就是整机卡死，这是已经发生过的事故。
+---
 
 ### 4.8 尚未确认的疑点：刀路姿态
 
@@ -439,6 +460,87 @@ cgroup 内存采样 + `ps` 逐进程 RSS + 日志字符串定位。
 前面的心跳行会被截掉，导致我一度把「节点已经被杀之后的回落期」当成「内存平稳」，
 **误报了一次「OOM 没复现」**。看长输出不要用 `tail` 截断。
 
+### 4.10 `remove_scan_link` unreachable 是同一个 OOM 的下游症状
+
+界面上点 `[ Remove Scan Link ]` 报
+
+```
+[ Remove Scan Link ]  ->  FAILED
+Service 'remove_scan_link' is unreachable
+```
+
+**这不是另一个 bug，是同一次节点死亡的第二现场。** 三个服务
+`remove_scan_link` / `add_scan_link` / `generate_motion_plan` 都由**同一个进程**
+`snp_motion_planning_node` 提供（可在容器内 `grep -l remove_scan_link` 于该二进制确认）。
+节点被 OOM SIGKILL 之后，这三个服务一起消失。
+
+`docker logs` 的最后几行把因果顺序钉死了：
+
+```
+[snp_motion_planning_node-11]: process has died [pid 102, exit code -9, ...]
+[rviz2-8] [INFO]  Node [Remove Scan Link] created service client [remove_scan_link]
+[rviz2-8] [ERROR] Remove Scan Link: Service with name 'remove_scan_link' is not reachable.
+[rviz2-8] [INFO]  Node [Add Scan Link] created service client [add_scan_link]
+[rviz2-8] [ERROR] Add Scan Link: Service with name 'add_scan_link' is not reachable.
+```
+
+**先死，后报不可达。** 时间戳上两者相隔不到 1 秒（`2026-09-15T09:39:17` 前后）。
+
+> ⚠️ **仿真仓库自带的 `docs/TROUBLESHOOTING_CN.md` 在这一点上会误导人。** 它把这个现象
+> 归因为「服务节点尚未就绪、点击太快」，建议 `./scripts/restart_demo.sh` 后重来。
+> 在**原厂状态**下这么处理是对的（节点没死，只是没起来）。但在本项目的状态里，
+> 重启只让节点**复活一次**——下一次 `/generate_motion_plan` 又会把它打死，
+> `remove_scan_link` 于是再次不可达。**重启治标不治本，别在这上面反复耗时间。**
+
+自查当前节点是死是活（比 `ros2 service list` 可靠，后者有发现缓存会残留过期条目）：
+
+```bash
+docker exec snp_automate_2023_sim bash -lc \
+  'for d in /proc/[0-9]*; do c=$(cat $d/comm 2>/dev/null); \
+   [ "$c" = "snp_motion_plan" ] && echo "存活 $(basename $d)"; done'
+```
+
+输出为空 = 已死。此时 RViz 里任何要调这三个服务的按钮都会 FAILED，属预期。
+
+### 4.11 「为什么以前能跑，现在不能」——答案是我加的 3 GiB 上限
+
+这是最容易被误解的一点，单独立一节。
+
+| | 容器内存上限 | 结果 |
+|---|---|---|
+| **2026-08-19 及以前**（原厂 compose） | **无**（`mem_limit` 根本没写） | 规划**跑得完**；代价是主机 2 GB swap 被吃光、整机卡死 |
+| **本项目加固后（旧版）** | `mem_limit: 3g` + `memswap_limit: 3g`（禁 swap） | 同一份内存需求 → 撞顶 → **SIGKILL**，必然死 |
+| **本项目（当前版）** | `${SNP_MEM_LIMIT:-0}`，**默认不限**，与原厂一致 | 大内存机器上恢复成「能跑完」 |
+
+六次实验的容器峰值全部精确压在 3 GiB 天花板上：
+
+| 实验 | 容器峰值 |
+|---|---|
+| memwatch-7paths-294pts | **3072 MiB** |
+| memwatch-1path-39pts | **3072 MiB** |
+| tc_threads1 | 3035 MiB |
+| ab_stool（换回原厂凳子） | 3028 MiB |
+| lvslaunch | 2954 MiB |
+| cfg_comesh | 2951 MiB |
+
+3072 MiB = 3 GiB。**没有一次是「用不掉」，全都是「撞墙」**。
+
+> **这是我引入的回归，必须写清楚。** §5 的加固把「整机僵死」换成了「容器内单进程被杀」，
+> 诊断上确实更可控（否则连日志都拿不到）。但它同时把**「能跑完但拖死机器」变成了
+> 「必然崩溃」**。这不是仿真本身变坏了——仿真一直需要那么多内存。
+
+**已处理**：`docker/compose.sim.yml` 里的上限改为 `${SNP_MEM_LIMIT:-0}`，
+即**默认不限制**（= 原厂行为）。大内存机器上什么都不用设就能跑。
+
+> ⚠️ **但在这台 5.7 GB 的机器上，请显式设一个小上限再跑**，否则会重演整机卡死：
+>
+> ```bash
+> export SNP_MEM_LIMIT=3g && docker compose -f docker/compose.sim.yml up -d
+> ```
+>
+> swap 已经 100% 占满、可用内存只剩 2.6 GB，这里**没有余量去验证「不设上限能否跑完」**。
+> 那个验证要留到明天的机器上做。
+
 ---
 
 ## 5. 容器加固
@@ -446,25 +548,27 @@ cgroup 内存采样 + `ps` 逐进程 RSS + 日志字符串定位。
 `docker/compose.sim.yml` 的改动（加固前备份为 `docker/compose.sim.yml.bak-before-hardening`）：
 
 ```yaml
-shm_size: 512m            # 默认 64MB，RViz/DDS/Qt 都走 shm，加载网格和轨迹时会顶到上限
-mem_limit: 3g             # 容器内存上限
-memswap_limit: 3g         # == mem_limit 即为禁用容器 swap
+shm_size: 512m                      # 默认 64MB，RViz/DDS/Qt 都走 shm，加载网格和轨迹时会顶到上限
+mem_limit: ${SNP_MEM_LIMIT:-0}      # 默认 0 = 不限制（= 原厂行为）
+memswap_limit: ${SNP_MEM_LIMIT:-0}  # == mem_limit 即为禁用容器 swap
 logging:
   driver: json-file
   options: { max-size: "10m", max-file: "3" }   # 节点会狂刷 cache hit，默认无上限会写满磁盘
 ```
 
-**主机只有 5.8 GB 内存。** 容器默认 `mem_limit=0`（无上限）：规划一旦爆内存，内核会拿
+**只有内存上限是可调的，其余两项无副作用、建议保留。**
+
+**这台主机只有 5.8 GB 内存。** 不设上限时：规划一旦爆内存，内核会拿
 **整个主机**去 swap，桌面连同所有窗口一起僵死——这就是「电脑直接卡死」的机制
 （当时容器 `OOMKilled=false`、`RestartCount=0`，说明容器自己没被杀，是**主机被拖死了**）。
 
 设上限之后，越界的是**容器内某个进程被 kill**（`docker start` 几秒就回来），
 而不是整台机器失去响应。
 
-> **这个加固是对的**，但它不解决 OOM——它只是把「整机冻死」变成了「节点被杀」。
-> 而节点被杀正是 `remove_scan_link is unreachable` 的直接原因。
+> **但注意这两者的取舍**：设上限换来了整机安全，代价是规划**必然失败**（§4.11）。
+> 内存紧张的机器上是「要么卡死、要么跑不成」，没有两全——**根治办法就是把内存加上去**。
 
-已验证生效：
+设 `SNP_MEM_LIMIT=3g` 时已验证生效：
 
 ```
 ShmSize=536870912 (512M)   Memory=3221225472 (3g)   MemSwap=3221225472
@@ -490,6 +594,10 @@ docker exec $C bash -lc "source /opt/ros/jazzy/setup.bash; source /opt/snp/insta
 ```
 
 ### 6.2 复现 OOM（**会让节点死掉，之后需要 `docker restart`**）
+
+> **前提：容器当前有内存上限**（本机默认 `SNP_MEM_LIMIT=3g`）。
+> 在没有上限的机器上跑这个，节点不会死——取而代之的是**主机被拖进 swap**。
+> 两条路都别在大内存机器上乱试。
 
 ```bash
 docker exec $C bash -lc "source /opt/ros/jazzy/setup.bash; source /opt/snp/install/setup.bash; \
@@ -543,7 +651,7 @@ docker exec $C bash -lc 'for d in /proc/[0-9]*; do [ "$(cat $d/comm 2>/dev/null)
 | `scripts/yamltest.sh` | `yamltest.sh '<sed表达式>' <标签>`：改 task composer 配置后重启测量 |
 | `scripts/lvslaunch.sh` / `lvstest.sh` | `contact_check_lvs_distance` 的启动时/运行时改值对照 |
 | `scripts/prof.py` + `profrun.sh` | 爬升期 0.15s 抓 `/proc/<pid>/maps`，判断是大块分配还是泄漏 |
-| `docker/compose.sim.yml` | **加固后的 compose**（shm 512M、`mem_limit: 3g`、swap 禁用、日志轮转）。§5 的全部改动都在这里 |
+| `docker/compose.sim.yml` | **加固后的 compose**（shm 512M、日志轮转、内存上限走 `${SNP_MEM_LIMIT:-0}` **默认不限制**）。§5 的全部改动都在这里 |
 | `config/tpp.yaml` | 改好的配置（`FixedDirection`，ROISelection 已停用，含详细中文注释） |
 | `config/tpp.yaml.bak-before-roiselection-removal` | 停用 ROISelection 之前的备份 |
 | `config/tpp.yaml.bak-before-fixed-direction` | 换 FixedDirection 之前的备份 |
@@ -585,6 +693,9 @@ docker exec $C bash -lc 'for d in /proc/[0-9]*; do [ "$(cat $d/comm 2>/dev/null)
 本机 5.7 GB 内存、swap 已 100% 占满，**没有余量做这个判定实验**——
 把容器上限调大就会把整机拖死（§5 记录的事故）。
 
+换机的目的**不是「试试看大内存行不行」**——§4.7 证据 4 基本已经回答了「行」。
+换机是为了拿到**峰值内存这个具体数字**，好把上限定准、把这条流程固定下来。
+
 ### 9.2 装起来
 
 ```bash
@@ -611,6 +722,9 @@ cd ~/snp-automate-2023-polishing-simulation
 
 > 脚本里引用仿真仓库路径用 `SNP_SIM_DIR`，默认 `$HOME/snp-automate-2023-polishing-simulation`。
 > 放在别处就先 `export SNP_SIM_DIR=<路径>`。
+>
+> **第 5 步不用设 `SNP_MEM_LIMIT`。** 大内存机器上默认就是「不限制」，
+> 这正是 2026-08-19 那次能跑完的配置。设了反而会把规划掐死。
 
 ### 9.3 判定实验（一条命令）
 
@@ -627,12 +741,20 @@ cd ~/snp-automate-2023-polishing-simulation
 | 斜率下降但未坍缩 | 有界但很大 | 继续调大上限；或调 `RasterMotionTask` 子流水线 |
 | 斜率基本没降 | **无界** | ❌ 换机器也没用。需摘掉 `DiscreteContactCheckTask`（§4.5 末） |
 
-> ⚠️ 脚本最后会**自动把上限还原成 3g**。在大内存机器上如果判定为「有界」，
-> 就直接改 `docker/compose.sim.yml` 里的 `mem_limit`，别用临时的 `docker update`。
+> 按 §4.7 证据 4，这条实验现在**大概率会判「有界」**。它真正的价值是给出**峰值数字**——
+> 有了它才能把 `mem_limit` 定成「峰值 ×1.5」而不是拍脑袋。
+>
+> ⚠️ 脚本最后会把上限还原成 `$SNP_MEM_LIMIT`，不设则**默认 3g**（对这台小机器是安全值）。
+> 在大内存机器上想还原成「不限制」，**跑之前就先**：
+>
+> ```bash
+> export SNP_MEM_LIMIT=0        # 然后 converge.sh 的还原步骤也会用 0
+> ```
 
 ### 9.4 如果判定成功（有界），怎么真的把坐面打磨出来
 
-1. 把 `docker/compose.sim.yml` 的 `mem_limit` / `memswap_limit` 调到足够大
+1. `mem_limit` **保持默认不限**（`${SNP_MEM_LIMIT:-0}` 不设即为 0）。
+   如果想设死一个数，用 §9.3 测出的峰值的 1.5 倍，例如峰值 4 GB → `SNP_MEM_LIMIT=6g`
 2. `./scripts/restart_demo.sh`
 3. 走 §6.1 确认刀路仍正常
 4. RViz 里跑完整流程（需要交互，脚本代替不了）
@@ -641,7 +763,7 @@ cd ~/snp-automate-2023-polishing-simulation
    把镜像里的原始文件恢复回来 —— 所以 `install-into-sim.sh` 之后不要再用
    `cfgtest.sh` / `abtest.sh` 那种 `docker cp` 手法去做**需要长期保留**的改动。
 
-### 9.5 若还是不行，下一步的排查方向
+### 9.5 若 §9.3 判出「无界」，下一步的排查方向
 
 按嫌疑从高到低：
 

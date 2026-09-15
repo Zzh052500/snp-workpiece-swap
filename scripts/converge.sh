@@ -114,5 +114,11 @@ else:
 PY
 
 echo
-echo "=== [7] 还原上限（想保留就跳过这步）==="
-docker update --memory 3g --memory-swap 3g $C >/dev/null && echo "  已还原 3g"
+echo "=== [7] 还原上限 ==="
+# 还原到什么由 SNP_MEM_LIMIT 决定；不设则按小内存机器的安全值 3g。
+# 在大内存机器上想还原成「不限制」，先 export SNP_MEM_LIMIT=0。
+RESTORE="${SNP_MEM_LIMIT:-3g}"
+# docker 的 0 表示不限制
+docker update --memory "$RESTORE" --memory-swap "$RESTORE" $C >/dev/null \
+  && echo "  已还原为 $RESTORE"$([ "$RESTORE" = 0 ] && echo "（= 不限制）")
+docker inspect $C --format '  现在 Memory={{.HostConfig.Memory}} MemorySwap={{.HostConfig.MemorySwap}}'

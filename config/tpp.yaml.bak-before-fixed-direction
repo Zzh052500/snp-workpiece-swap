@@ -1,0 +1,48 @@
+mesh_modifiers:
+  # 为什么停用 ROISelection（snp_tpp 提供，见 snp_tpp/roi_selection_mesh_modifier.h）:
+  #
+  # 它通过 /get_selection 读取 RViz 多边形选择工具的圈选结果，然后交给
+  # noether 的 ExtrudedPolygonSubsetExtractor。后者的算法是：
+  #   拟合平面到边界点 -> 投影边界 -> 沿拟合平面法向把多边形拉成棱柱，
+  #   "一直延伸到网格的边界" -> 取棱柱内顶点 -> 聚类 -> 取离边界质心最近的簇。
+  # 也就是它取的是**柱体**，不是你在屏幕上圈出来的那块曲面。
+  #
+  # 对原来那个球（架在桌面上的单个拱面）没问题：竖直柱体切出来的正好是一块干净曲面。
+  # 但对凳子：坐面下方的竖直柱体必然把四条桌腿一起包进来
+  # （实测圈选坐面时柱内顶点 z 从 0.087 贯穿到 0.317，坐面+腿全在里面），
+  # 栅格规划器在这种"带腿柱体"上生成不出刀路 -> 返回空 tool_paths ->
+  # 行为树下游对空 vector 取 at(0) ->
+  # std::vector::_M_range_check -> "Behavior tree did not complete successfully"。
+  # 只要桌腿在坐面下方，这是几何上的死结，调 min_cluster_size /
+  # plane_distance_threshold 都无解。
+  #
+  # 停用后的效果（已实测）：同一时刻同一网格下由 0 条变为 8 条路径 424 点，
+  # 但工具路径会覆盖整个工件，包括桌腿。
+  # 要恢复"只打磨圈选区域"，得让工件没有悬在下方的结构（例如只留坐面板），
+  # 取消下面 5 行注释即可。
+  # - name: ROISelection
+  #   max_cluster_size: 1000000000
+  #   min_cluster_size: 100
+  #   cluster_tolerance: 0.1
+  #   plane_distance_threshold: 0.1
+  - name: NormalsFromMeshFaces
+tool_path_planner:
+  name: PlaneSlicerLegacy
+  direction_generator:
+    name: LocatedVectorDirection
+    service_name: get_located_vector
+  origin_generator:
+    name: Centroid
+  line_spacing: 0.029999999999999999
+  point_spacing: 0.029999999999999999
+  min_hole_size: 0.10000000000000001
+  min_segment_size: 0.10000000000000001
+  bidirectional: true
+tool_path_modifiers:
+  - name: MovingAverageOrientationSmoothing
+    window_size: 5
+  - name: UniformSpacing
+    point_spacing: 0.014999999999999999
+    spline_degree: 2
+    include_endpoints: false
+  - name: SnakeOrganization

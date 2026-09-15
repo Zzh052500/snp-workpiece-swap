@@ -1,0 +1,69 @@
+mesh_modifiers:
+  # 为什么停用 ROISelection（snp_tpp 提供，见 snp_tpp/roi_selection_mesh_modifier.h）:
+  #
+  # 它通过 /get_selection 读取 RViz 多边形选择工具的圈选结果，然后交给
+  # noether 的 ExtrudedPolygonSubsetExtractor。后者的算法是：
+  #   拟合平面到边界点 -> 投影边界 -> 沿拟合平面法向把多边形拉成棱柱，
+  #   "一直延伸到网格的边界" -> 取棱柱内顶点 -> 聚类 -> 取离边界质心最近的簇。
+  # 也就是它取的是**柱体**，不是你在屏幕上圈出来的那块曲面。
+  #
+  # 对原来那个球（架在桌面上的单个拱面）没问题：竖直柱体切出来的正好是一块干净曲面。
+  # 但对凳子：坐面下方的竖直柱体必然把四条桌腿一起包进来
+  # （实测圈选坐面时柱内顶点 z 从 0.087 贯穿到 0.317，坐面+腿全在里面），
+  # 栅格规划器在这种"带腿柱体"上生成不出刀路 -> 返回空 tool_paths ->
+  # 行为树下游对空 vector 取 at(0) ->
+  # std::vector::_M_range_check -> "Behavior tree did not complete successfully"。
+  # 只要桌腿在坐面下方，这是几何上的死结，调 min_cluster_size /
+  # plane_distance_threshold 都无解。
+  #
+  # 工件现状：四条腿已切掉，只剩坐面板
+  # （runtime/snp_home/seat_only.ply，2256 顶点 / 4082 面，z 0.270~0.317），
+  # 所以"竖直柱体必然包住腿"这个几何死结已经不存在了。
+  # 停用 ROISelection 后实测：7 条纯坐面光栅线 / 294 点，沿 +X 平行，
+  # 每条 y 恒定，z 只在 0.274~0.319，零跳变，跑两遍逐点相同。
+  # 要恢复"只打磨圈选区域"，取消下面 5 行注释即可。
+  # - name: ROISelection
+  #   max_cluster_size: 1000000000
+  #   min_cluster_size: 100
+  #   cluster_tolerance: 0.1
+  #   plane_distance_threshold: 0.1
+  - name: NormalsFromMeshFaces
+tool_path_planner:
+  name: PlaneSlicerLegacy
+  # 方向生成器：固定 [+X]，不再依赖 RViz 里手拖的 located vector。
+  #
+  # 为什么换掉 LocatedVectorDirection：
+  #   它的坐标来自 RViz 的 LocatedVector 工具（noether_ros/located_vector_rviz_tool.cpp），
+  #   而 config/app.rviz 里只保存了线颜色/服务名，**没有保存起点终点**：
+  #       - Class: noether_ros/LocatedVector
+  #         Line color: 128; 128; 0
+  #         Service name: get_located_vector
+  #   也就是说容器/RViz 每次重启，located vector 就丢了，必须手工再拖一次；
+  #   没拖之前 /plan_tool_path 一律报
+  #       Error invoking tool path planner ... Start point has not been set
+  #   这是整条链路里唯一的纯手工、不可复现的环节，所以换成固定方向。
+  #
+  # FixedDirection 的 YAML 形状必须是 {x,y,z} 映射（写成 [1,0,0] 会报
+  # "Required member 'x' not found in YAML node"）。
+  # [+X] 与原来手拖出来的方向一致（手拖时 source->target 实测约 (+0.126,-0.013,-0.001)）。
+  direction_generator:
+    name: FixedDirection
+    direction:
+      x: 1.0
+      y: 0.0
+      z: 0.0
+  origin_generator:
+    name: Centroid
+  line_spacing: 0.029999999999999999
+  point_spacing: 0.029999999999999999
+  min_hole_size: 0.10000000000000001
+  min_segment_size: 0.10000000000000001
+  bidirectional: true
+tool_path_modifiers:
+  - name: MovingAverageOrientationSmoothing
+    window_size: 5
+  - name: UniformSpacing
+    point_spacing: 0.014999999999999999
+    spline_degree: 2
+    include_endpoints: false
+  - name: SnakeOrganization

@@ -1,0 +1,12 @@
+   [cache hit! x2]
+Debug:   KDL LMA Failed to calculate IK, increment joints are tool small
+Debug:   KDL LMA Failed to calculate IK, increment joints are tool small
+   [cache hit! x2]
+Debug:   KDL LMA Failed to calculate IK, increment joints are tool small
+Debug:   KDL LMA Failed to calculate IK, increment joints are tool small
+   [cache hit! x2]
+Debug:   KDL LMA Failed to calculate IK, increment joints are tool small
+   [cache hit! x28]
+Debug:   Motion Planner process succeeded
+   [cache hit! x664]
+[ERROR] [snp_motion_planning_node-11]: process has died [pid 102, exit code -9, cmd '/opt/snp/install/snp_motion_planning/lib/snp_motion_planning/snp_motion_planning_node --ros-args --params-file /tmp/launch_params_67ob94w0 --params-file /tmp/launch_params_04yt1nbp --params-file /tmp/launch_params_ou01h1ij --params-file /tmp/launch_params_idn0ttbi --params-file /tmp/launch_params_tt828890 --params-file /tmp/launch_params_sih5gk7a --params-file /tmp/launch_params_84b_gswl --params-file /tmp/launch_params__nadvst4 --params-file /tmp/launch_params_71xztkmo --params-file /tmp/launch_params_nwjtg3b3 --params-file /tmp/launch_params_1qkx6cdq --params-file /tmp/launch_params_9cx6go8n --params-file /tmp/launch_params_ddcr6e2h --params-file /tmp/launch_params_j6jtxqa4 --params-file /tmp/launch_params_dmjpnfne --params-file /tmp/launch_params_ij648olm --params-file /tmp/launch_params_3cppn3xz --params-file /tmp/launch_params_9vo3lmvt --params-file /tmp/launch_params_pmhysqid --params-file /tmp/launch_params__xxfviek --params-file /tmp/launch_params_02d7ztf_ --params-file /tmp/launch_params_kdw2wl1y --params-file /tmp/launch_params_v32r56up'].

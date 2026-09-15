@@ -310,7 +310,7 @@ Received motion planning request
     with error: Bad file descriptor
   ```
   库实际装在 `/opt/snp/install/snp_motion_planning/lib/`。这是 `boost_plugin_loader`
-  **探测备用路径失败后继续**，插件最终正常加载，规划确实 `succeeded`。**红鲱鱼。**
+  **探测备用路径失败后继续**，插件最终正常加载，规划确实 `succeeded`。
 - ❌ **不是测试客户端**：python3 全程 278–445 MiB。
 - ❌ **不是坐面网格 / `FixedDirection`**：它们解决的是「刀路干净可复现」，与 OOM 无关。
   （这一点我一开始判断错了——曾以为换网格能顺带解决 OOM，实测证明不能。）

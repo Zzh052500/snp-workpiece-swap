@@ -214,6 +214,18 @@ success = True  message = ''
 
 任何 `/generate_motion_plan` 请求都会让 `snp_motion_planning_node` 在约 6 秒内从 ~130 MiB
 涨到 **2.3 GB**，撞上容器 3 GiB 上限，被 OOM kill（`exit code -9`）。
+
+**截至记录时：9 次请求、9 次死亡，无一幸免。**
+
+```
+Received motion planning request   9 次
+Motion Planner process succeeded   9 次
+process has died (exit -9)        10 次   ← 多出的一次是启动早期的另一次崩溃
+```
+
+即每一次规划请求都**确实规划成功了**，然后在返回结果的阶段把内存吃爆被杀掉——
+不是随机故障，是确定性故障。
+
 容器本身活着，但**节点死了 ⟹ 它提供的所有服务一起消失**，RViz 侧表现为：
 
 ```
@@ -396,8 +408,14 @@ docker restart snp_automate_2023_sim
 docker exec $C bash -lc 'for d in /proc/[0-9]*; do [ "$(cat $d/comm 2>/dev/null)" = "snp_motion_plan" ] && exit 0; done; exit 1'
 ```
 
-> **`pgrep -f snp_motion_planning_node` 会匹配到自己的 bash 包装脚本**，给出「节点存活」的假阳性。
-> 必须用 `/proc/*/comm` 精确比对（`comm` 被截断到 15 字符，正好是 `snp_motion_plan`）。
+> **判断节点死活有两个陷阱，方向正好相反：**
+>
+> 1. **假阳性**：`pgrep -f snp_motion_planning_node` 会匹配到自己的 bash 包装脚本。
+>    必须用 `/proc/*/comm` 精确比对（`comm` 被截断到 15 字符，正好是 `snp_motion_plan`）。
+> 2. **假阴性以外的另一种假象**：**`ros2 service list` 在节点死后会继续列出它的服务**——
+>    那是 ROS 2 daemon 的发现缓存，不是真相。实测节点根本没起来，
+>    `/generate_motion_plan` 却还在列表里，害得人以为服务正常。
+>    **别用服务列表判断存活**，只看 `/proc`。
 
 ---
 

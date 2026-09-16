@@ -27,16 +27,22 @@ services:
     # --- 容器内存上限：默认【不限制】，与原厂一致 ---
     #
     # 原厂 compose 里根本没有 mem_limit（`git show HEAD:docker/compose.sim.yml` 只有 image:）。
-    # 抛光运动规划峰值要吃到 3GB 以上，一个小上限会把它直接 SIGKILL —— 这正是
-    # 「以前能跑、后来跑不通」的原因，详见 README §4.11。
     #
-    #   0 = 不限制。大内存机器（≥16GB）就用这个，让规划吃饱。
+    # ⚠️ 2026-09-16 更正：别再按「峰值 3GB 左右」来定这个值了。
+    #    实测表明运动规划的内存开销**随上限一起涨、斜率不收敛**：
+    #        上限 3g -> 节点涨到 2.3GB 撞墙
+    #        上限 6g -> 节点涨到 5.2GB 撞墙，斜率全程不降
+    #    也就是说 2.3GB / 5.2GB 都只是「撞墙时的读数」，不是峰值。详见 README §4.12。
+    #
+    #   0 = 不限制。让规划吃饱（**服务器上就用这个**）。
     #       代价：容器内存失控时内核会拿整个主机去 swap，桌面会僵死。
     #
-    #   小内存机器（本机 5.7GB、swap 已满）请显式设上限，否则会重演「电脑直接卡死」：
-    #       export SNP_MEM_LIMIT=3g && docker compose -f docker/compose.sim.yml up -d
+    #   小内存机器（本机 7.5GB、swap 已用 1.7GB）请显式设上限，否则会重演「电脑直接卡死」：
+    #       export SNP_MEM_LIMIT=6g && docker compose -f docker/compose.sim.yml up -d
     #       设了之后越界的是容器内单进程被 OOM kill（docker start 几秒就回来），
     #       而不是整台机器失去响应。
+    #       ⚠️ 但本机实测 6g **也不够跑通规划**，只是能把伤害限制在容器内。
+    #          本机已无法再往上试（物理内存就 7.5GB），判定实验必须上服务器做。
     #
     # memswap_limit == mem_limit 即为禁止容器使用 swap。
     mem_limit: ${SNP_MEM_LIMIT:-0}

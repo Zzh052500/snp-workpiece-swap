@@ -8,13 +8,18 @@
 # 做法：把容器上限临时调高（docker update，可逆、不用重建），跑一次规划，看 RSS 曲线
 #       末段斜率是否趋近 0。同时打印每段斜率供判断。
 #
-# 用法: converge.sh [上限]     默认 16g（大内存机器上建议 16g~32g）
+# 用法: converge.sh [上限]     默认 32g
 #
-# ⚠️ 本机（5.7GB 内存、swap 已满）**不要**用大上限，会把整机拖死。
+# ⚠️ 2026-09-16 更正：默认值从 16g 提到 32g。
+#    本机实测 6g 时节点 8 秒涨到 5.2GB 才被截断、斜率毫无收敛迹象（README §4.12），
+#    说明 16g 很可能照样撞墙、白跑一轮。宁可给大，不要给小。
+#
+# ⚠️ 本机（7.5GB 内存、swap 已用 1.7GB）**不要**用大上限，会把整机拖死。
+#    判定实验必须上服务器（内存 ≥32GB）做。
 set -uo pipefail
 
 C=snp_automate_2023_sim
-LIM=${1:-16g}
+LIM=${1:-32g}
 SIM="${SNP_SIM_DIR:-$HOME/snp-automate-2023-polishing-simulation}"
 H="$SIM/runtime/snp_home"
 CFG=/opt/snp_automate_2023/install/snp_automate_2023/share/snp_automate_2023/config/tpp.yaml

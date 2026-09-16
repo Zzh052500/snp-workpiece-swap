@@ -17,7 +17,10 @@ echo "本项目   : $HERE"
 echo "仿真仓库 : $SIM"
 echo
 
-bak() { [ -f "$1" ] && cp -v "$1" "$1.bak-$STAMP"; }
+# ⚠️ 末尾必须 || true：脚本开了 set -e，而 "[ -f x ] && cp" 在文件不存在时
+#    整体返回 1，会直接把脚本干掉。首次在服务器上跑时 seat_only.ply 必然不存在，
+#    少了这个 || true 就会在第 3 步静默退出、网格一个都没装进去。
+bak() { [ -f "$1" ] && cp -v "$1" "$1.bak-$STAMP" || true; }
 
 echo "==> 1/4 tpp.yaml"
 mkdir -p "$SIM/config"; bak "$SIM/config/tpp.yaml"

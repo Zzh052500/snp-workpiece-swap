@@ -340,14 +340,27 @@ Received motion planning request
 | `contact_check_lvs_distance` = 0.25 | +2031 MiB |
 | `contact_check_lvs_distance` = 0.50 | +1969 MiB |
 | Taskflow 执行器 `threads: 8 → 1` | +2176 MiB |
-| **工件换回原厂凳子**（`results_mesh.ply.bak-stool`） | +2168 MiB |
+| **工件换回原厂凳子**（`results_mesh.ply.bak-stool`） ⚠️ | +2168 MiB |
 | `collision_object_type: convex_mesh → mesh`（跳过凸分解） | +2028 MiB |
 
-三条独立结论：
+⚠️ **2026-09-16 更正：第 6 行（原厂凳子那行）无法验证。**
 
-1. **不是工件。** 换回未经任何改动的原厂凳子（6463 顶点 / 12032 面）照样炸，
-   增量 +2168 vs 坐面 +2176，几乎一模一样。
-   **这推翻了「是我们的网格触发的」这个假设**——此前一直认为坐面网格是嫌疑。
+本项目的消融实验用 `abtest.sh` 脚本复现，它引用了 `$H/snp/meshes/results_mesh.ply.bak-stool` 备份文件。
+但那个备份文件**至今已不存在于本机磁盘**（`find /home/aitech -name '*bak-stool*'` 无结果）。
+所以当初换回来的"原厂凳子"到底是哪个形态，**无法事后检查**。
+
+已知的事实是：
+- 原厂仓库的 `results_mesh.ply` = **球拱面**（3627 顶点 / 7052 面，bbox z [0.087, 0.227]，拱高比 0.298）
+- 坐面板 = 2256 顶点 / 4082 面（bbox z [0.270, 0.317]，拱高比 0.167）
+- 两者尺寸差了 **60%**
+
+表中「原厂凳子 +2168」这个数字是在本机 3 GB 上限下测到的，与坐面基线 +2220 **确实接近**。
+但这两个数字的测量点（本机 3 GB 截断处）位置相同，所以**无法区分「真的平台无关」还是「只是巧合地撞在同一道墙前」**。
+
+**结论**：工件是否影响内存开销，**目前未确定**，**需要在服务器上用球面 vs 坐面做 A/B 实验**（见 [§9.3](#93-判定实验一条命令)）。
+
+其他两条结论仍然成立：
+
 2. **不是碰撞检查精度。** `contact_check_lvs_distance` 粗 10 倍，内存只降 11%。
 3. **不是并行度。** Taskflow 执行器线程 8→1 无变化。
 
@@ -798,11 +811,16 @@ docker exec $C bash -lc 'for d in /proc/[0-9]*; do [ "$(cat $d/comm 2>/dev/null)
 > 所以这次上服务器要同时回答两个问题：
 > 1. **会不会收敛？**（行不行）
 > 2. **收敛在哪？**（峰值数字，用来定 `mem_limit`）
->
-> **上服务器前的准备：**
-> - 内存 **≥32 GB**。8 GB / 16 GB 机器会重演「撞墙」，只是墙高一点，得不到答案。
-> - **把真机容器停掉**，或确认它不在 Domain 42（见 §10.2），否则服务名照样冲突。
-> - 确认 `results_mesh.ply` 不是截断文件（见 §10.1）。
+
+**上服务器前的准备**：
+
+- **内存 ≥32 GB**。8 GB / 16 GB 机器会重演「撞墙」，只是墙高一点，得不到答案。
+- **把真机容器停掉**，或确认它不在 Domain 42（见 §10.2），否则服务名照样冲突。
+- **确认 `results_mesh.ply` 不是截断文件**（见 §10.1）。正常文件应是 125494 B / 2256 顶点 / 4082 面（md5 `9af94bbe…`）。
+  - 可用命令检查：`ls -la ~/snp-automate-2023-polishing-simulation/runtime/snp_home/snp/meshes/results_mesh.ply`
+  - 若不是 125494 字节，用 `cp ~/snp-workpiece-swap/artifacts/seat_only.ply ~/snp-automate-2023-polishing-simulation/runtime/snp_home/snp/meshes/results_mesh.ply` 修复
+- **可选**：备份原始的 `results_mesh.ply`（原厂球拱面），为 §9.3 的工件对照做准备
+  - `cp ~/snp-automate-2023-polishing-simulation/meshes/part_scan.ply ~/snp-automate-2023-polishing-simulation/meshes/part_scan.ply.bak-for-workpiece-test`
 
 ### 9.2 装起来
 
@@ -834,7 +852,9 @@ cd ~/snp-automate-2023-polishing-simulation
 > **第 5 步不用设 `SNP_MEM_LIMIT`。** 大内存机器上默认就是「不限制」，
 > 这正是 2026-08-19 那次能跑完的配置。设了反而会把规划掐死。
 
-### 9.3 判定实验（一条命令）
+### 9.3 判定实验（一条命令，但可选增加工件对照）
+
+**基础实验**（判定内存有界/无界）：
 
 ```bash
 export SNP_MEM_LIMIT=0                        # ★ 先做这步，见下方说明
@@ -853,6 +873,33 @@ export SNP_MEM_LIMIT=0                        # ★ 先做这步，见下方说�
 | 末段斜率坍缩到首段 1/4 以下 | **有界** | ✅ 上限设成「实测峰值 ×1.5」固定下来，收工 |
 | 斜率下降但未坍缩 | 有界但很大 | 再加倍上限重跑一次，直到坍缩 |
 | 斜率基本没降 | **无界** | ❌ 加内存救不了。转 §9.5：摘掉 `DiscreteContactCheckTask` |
+
+**可选：工件对照实验**（判定坐面 vs 球面的影响）
+
+$9.3 的结论需配合 §4.5 的工件实验来解释。当初的消融实验无法验证（备份文件已丢失），
+所以**建议在 32g 上先跑一次坐面基线，然后换成球拱面再跑一次**：
+
+```bash
+# 1) 坐面基线（当前配置，已是坐面）
+export SNP_MEM_LIMIT=0
+~/snp-workpiece-swap/scripts/converge.sh 32g
+
+# 2) 备份坐面结果
+cp /sys/fs/cgroup/... memory.peak <记下来>
+
+# 3) 换球面
+cp ~/snp-automate-2023-polishing-simulation/meshes/part_scan.ply \
+   ~/snp-automate-2023-polishing-simulation/runtime/snp_home/snp/meshes/results_mesh.ply
+
+# 4) 重跑
+~/snp-workpiece-swap/scripts/converge.sh 32g
+
+# 5) 对照两次的峰值 / 爬升曲线
+```
+
+**对照结论**：
+- 两次峰值 ≤10% 差异 ⟹ **工件无关**（§4.5 的结论成立）
+- 球面明显低于坐面 ⟹ **工件有关**（坐面复杂度高，触发更多内存需求）
 
 > ⚠️ **`export SNP_MEM_LIMIT=0` 必须在跑之前执行。** 脚本最后会把上限还原成
 > `$SNP_MEM_LIMIT`，**不设则默认 3g**——在服务器上会把刚跑通的容器又掐死。

@@ -6,7 +6,9 @@
   2. /generate_motion_plan    -> approach / process / departure
      motion_group = manipulator, tcp_frame = sand_tcp
 
-全程每 0.25s 采样容器 cgroup 内存，实时打印，以便在逼近 3GiB 上限前手动叫停。
+全程每 0.25s 采样容器 cgroup 内存，实时打印。
+上限从 cgroup 实读（不再写死），以便区分「撞到了墙」和「真的到了峰值」——
+这两者在 2026-09-16 之前一直被混淆，详见 README §4.12。
 """
 import os
 import sys
@@ -46,6 +48,19 @@ def cg(path):
 def mem_mb():
     v = cg('memory.current')
     return int(v) / 1024 / 1024 if v.isdigit() else -1.0
+
+
+def limit_mb():
+    """容器内存上限（MiB）。'max' 表示不限制。"""
+    v = cg('memory.max')
+    if v == 'max':
+        return -1.0
+    return int(v) / 1024 / 1024 if v.isdigit() else -1.0
+
+
+def limit_str():
+    m = limit_mb()
+    return '不限制' if m < 0 else f'{m:.0f} MiB'
 
 
 PEAK = [0.0]
@@ -117,8 +132,7 @@ def main():
     th.start()
 
     print('=' * 68)
-    print('基线：容器内存 %.0f MiB / 上限 %s MiB' %
-          (mem_mb(), int(cg('memory.max')) // 1024 // 1024 if cg('memory.max').isdigit() else '?'))
+    print('基线：容器内存 %.0f MiB / 上限 %s' % (mem_mb(), limit_str()))
     print('=' * 68, flush=True)
 
     # ---- 第 1 步：出刀路 -------------------------------------------------
@@ -157,7 +171,7 @@ def main():
     # ---- 第 2 步：运动规划（就是会压死机器的那一步）------------------------
     print(f'\n[2/2] /generate_motion_plan  —— 对 {npts} 个点做运动规划')
     print(f'   motion_group={MOTION_GROUP}  tcp_frame={TCP_FRAME}')
-    print(f'   容器内存上限 3072 MiB，swap 为 0；超限会被 OOM kill。\n', flush=True)
+    print(f'   容器内存上限 {limit_str()}；超限会被 OOM kill。\n', flush=True)
 
     mreq = GenerateMotionPlan.Request()
     mreq.tool_paths = snp_paths
@@ -169,7 +183,7 @@ def main():
     time.sleep(0.3)
 
     print('\n' + '=' * 68)
-    print(f'容器内存峰值 = {PEAK[0]:.0f} MiB   (上限 3072 MiB)')
+    print(f'容器内存峰值 = {PEAK[0]:.0f} MiB   (上限 {limit_str()})')
     print(f'cgroup memory.peak = {cg("memory.peak")}')
     print(f'cgroup memory.events = {cg("memory.events")}')
     print('=' * 68)

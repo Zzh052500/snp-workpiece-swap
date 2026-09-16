@@ -23,18 +23,27 @@ echo "==> 1/4 tpp.yaml"
 mkdir -p "$SIM/config"; bak "$SIM/config/tpp.yaml"
 cp -v "$HERE/config/tpp.yaml" "$SIM/config/tpp.yaml"
 
-echo "==> 2/4 docker/compose.sim.yml（含 3g 上限等加固）"
+echo "==> 2/4 docker/compose.sim.yml（shm/日志轮转/内存上限加固）"
 mkdir -p "$SIM/docker"; bak "$SIM/docker/compose.sim.yml"
 cp -v "$HERE/docker/compose.sim.yml" "$SIM/docker/compose.sim.yml"
 
-echo "==> 3/4 坐面网格（两处都要，缺一不可）"
+echo "==> 3/4 坐面网格（三个落点，缺一不可）"
 mkdir -p "$SIM/meshes" "$SIM/runtime/snp_home/snp/meshes"
 bak "$SIM/meshes/part_scan.ply"
+bak "$SIM/meshes/seat_only.ply"
 bak "$SIM/runtime/snp_home/snp/meshes/results_mesh.ply"
+# part_scan.ply  : 已推送的 start.launch.xml 里 mesh_file 的默认值（原厂路径）
+# seat_only.ply  : 本项目改过的 start.launch.xml 里 mesh_file 指向的名字
+#                  两个都放，这样无论用哪个版本的 launch 都能起来。
 cp -v "$HERE/artifacts/seat_only.ply" "$SIM/meshes/part_scan.ply"
+cp -v "$HERE/artifacts/seat_only.ply" "$SIM/meshes/seat_only.ply"
+# results_mesh.ply : snp_motion_planning_node 读进碰撞环境的那个网格。
+#                    ⚠️ 它极易被截断（只有顶点没有面片），届时节点会
+#                   "RPly: Error reading 'vertex_indices'" 然后 exit -11 段错误（README §10.1）
 cp -v "$HERE/artifacts/seat_only.ply" "$SIM/runtime/snp_home/snp/meshes/results_mesh.ply"
 echo "    md5 = $(md5sum "$HERE/artifacts/seat_only.ply" | cut -d' ' -f1)"
 echo "    这个文件是 ASCII PLY，2256 顶点 / 4082 面，z 0.270~0.317"
+echo "    文件大小应为 125494 字节；若不是，说明被截断了"
 
 echo "==> 4/4 诊断脚本 -> runtime/snp_home/"
 mkdir -p "$SIM/runtime/snp_home"
